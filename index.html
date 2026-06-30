@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Beszállítók" />
+  <meta name="theme-color" content="#1B1E24" />
+  <title>CNF Beszállítók</title>
+
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&display=swap');
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; }
+    html, body, #root { height: 100%; }
+    body { font-family: 'Archivo', -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
+      background: #F6F4EF; color: #1B1E24; font-variant-numeric: tabular-nums;
+      -webkit-font-smoothing: antialiased; }
+    .chips::-webkit-scrollbar { display: none; }
+    .tap { cursor: pointer; transition: transform .06s ease, background .12s ease, border-color .12s ease; }
+    .tap:active { transform: scale(.985); }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible {
+      outline: 2px solid #A9792B; outline-offset: 2px; }
+    .pole { background: repeating-linear-gradient(115deg, #A9792B 0 10px, #C9A14A 10px 20px, #1B1E24 20px 30px); }
+    @keyframes up { from { transform: translateY(16px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    .sheet { animation: up .18s ease; }
+    .in { width: 100%; padding: 11px 12px; border: 1px solid #E6E2D8; border-radius: 10px;
+      font-size: 15px; color: #1B1E24; background: #fff; font-family: inherit; }
+    .in:focus { border-color: #A9792B; }
+    .lbl { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+      color: #5A6068; margin-bottom: 5px; display: block; }
+    @media (prefers-reduced-motion: reduce) { .sheet, .tap { animation: none; transition: none; } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useMemo } = React;
+
+    /* ============================================================
+       BEÁLLÍTÁS — ide jön a Supabase projekted két adata.
+       Supabase → Project Settings → API
+       ============================================================ */
+    const SUPABASE_URL      = "https://zeratolucqbxpbxncbyy.supabase.co";       // pl. https://abcd1234.supabase.co
+    const SUPABASE_ANON_KEY = "sb_publishable_DHWBbu7yG-uPpgqpENLYiw__BSK5LVg";   // a "anon public" kulcs
+    /* ============================================================ */
+
+    const C = {
+      ink: "#1B1E24", inkSoft: "#5A6068", paper: "#F6F4EF", card: "#FFFFFF",
+      line: "#E6E2D8", brass: "#A9792B", brassDark: "#8A6322", red: "#C0392B",
+    };
+
+    const STATUSES = [
+      { key: "Megkeresendő", color: "#8A8F98", bg: "#F0F0EE" },
+      { key: "Megkeresve",  color: "#2F6F9F", bg: "#E8F1F8" },
+      { key: "Válaszolt",   color: "#1F8A6D", bg: "#E4F4EE" },
+      { key: "Tárgyalás",   color: "#A9792B", bg: "#F6EEDD" },
+      { key: "Aktív",       color: "#2E8B45", bg: "#E5F3E8" },
+      { key: "Elvetve",     color: "#9A4A41", bg: "#F1E6E4" },
+    ];
+    const CATEGORIES = [
+      "Hardver (olasz)", "Hardver (egyéb)", "Kozmetikum bérgyártó (HU)",
+      "Kozmetikum (egyéb)", "Logisztika / szállítás", "Egyéb",
+    ];
+    const statusMeta = (k) => STATUSES.find((s) => s.key === k) || STATUSES[0];
+
+    const today = () => new Date().toISOString().slice(0, 10);
+    const fmtDate = (iso) => {
+      if (!iso) return "";
+      const d = new Date(iso + "T00:00:00");
+      return isNaN(d) ? iso : d.toLocaleDateString("hu-HU", { year: "numeric", month: "short", day: "numeric" });
+    };
+    const isOverdue = (iso) => !!iso && iso <= today();
+    const daysAgo = (iso) => iso ? Math.round((Date.now() - new Date(iso + "T00:00:00").getTime()) / 86400000) : null;
+
+    const configured = !SUPABASE_URL.startsWith("IDE_") && !SUPABASE_ANON_KEY.startsWith("IDE_");
+    const supa = configured ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+    /* kiinduló 7 beszállító (user_id-t a DB tölti) */
+    const seedRows = () => ([
+      { nev: "Gamma Più", kategoria: "Hardver (olasz)", orszag: "Olaszország", termekek: "Hajvágó gépek, ollók, hajszárítók.", kovetkezo_lepes: "Ravanello-n keresztül egyeztetni",
+        jegyzetek: [{ datum: today(), szoveg: "Olasz B2B — WhatsApp/telefon jobban működik, mint email. Nyáron lassabb." }] },
+      { nev: "StyleCraft", kategoria: "Hardver (olasz)", orszag: "Olaszország", termekek: "Prémium hajvágó gépek.", kovetkezo_lepes: "Ravanello-n keresztül egyeztetni", jegyzetek: [] },
+      { nev: "Mezzalama", kategoria: "Hardver (olasz)", orszag: "Olaszország", jegyzetek: [] },
+      { nev: "Barberstore", kategoria: "Hardver (olasz)", orszag: "Olaszország", jegyzetek: [] },
+      { nev: "PANDHY'S", kategoria: "Kozmetikum bérgyártó (HU)", orszag: "Magyarország", termekek: "Saját márkás kozmetikum (bérgyártás).", min_rendeles: "Kis minimum elfogadható.", kovetkezo_lepes: "Minimum + EU kozmetikai megfelelőség egyeztetése",
+        jegyzetek: [{ datum: today(), szoveg: "Az EU kozmetikai megfelelőség intézését vállalja." }] },
+      { nev: "HappySkin", kategoria: "Kozmetikum bérgyártó (HU)", orszag: "Magyarország", termekek: "Saját márkás kozmetikum (bérgyártás).", jegyzetek: [] },
+      { nev: "ZeenLab", kategoria: "Kozmetikum bérgyártó (HU)", orszag: "Magyarország", termekek: "Saját márkás kozmetikum (bérgyártás).", jegyzetek: [] },
+    ].map((r) => ({
+      kategoria: "Egyéb", orszag: "", kapcsolattarto: "", email: "", telefon: "",
+      statusz: "Megkeresendő", termekek: "", min_rendeles: "", utolso_kapcsolat: null,
+      kovetkezo_lepes: "", kovetkezo_datum: null, jegyzetek: [], ...r,
+    })));
+
+    const toRow = (d) => ({
+      nev: d.nev.trim(), kategoria: d.kategoria, orszag: d.orszag || "",
+      kapcsolattarto: d.kapcsolattarto || "", email: d.email || "", telefon: d.telefon || "",
+      statusz: d.statusz, termekek: d.termekek || "", min_rendeles: d.min_rendeles || "",
+      utolso_kapcsolat: d.utolso_kapcsolat || null, kovetkezo_lepes: d.kovetkezo_lepes || "",
+      kovetkezo_datum: d.kovetkezo_datum || null, jegyzetek: d.jegyzetek || [],
+    });
+
+    /* ----------------------------- Badge ----------------------------- */
+    function Badge({ status }) {
+      const m = statusMeta(status);
+      return <span style={{ fontSize: 11, fontWeight: 600, color: m.color, background: m.bg,
+        padding: "3px 9px", borderRadius: 999, whiteSpace: "nowrap" }}>{status}</span>;
+    }
+
+    /* --------------------------- Konfig-kérő -------------------------- */
+    function NeedsConfig() {
+      return (
+        <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ maxWidth: 420, background: "#fff", border: `1px solid ${C.line}`, borderRadius: 16, padding: 24 }}>
+            <div className="pole" style={{ height: 4, borderRadius: 4, marginBottom: 16 }} />
+            <h1 style={{ fontSize: 19, fontWeight: 700 }}>Még be kell állítani</h1>
+            <p style={{ fontSize: 14.5, color: C.inkSoft, lineHeight: 1.5, marginTop: 10 }}>
+              Nyisd meg az <code>index.html</code>-t, és a tetején lévő <b>BEÁLLÍTÁS</b> blokkban
+              cseréld ki a <code>SUPABASE_URL</code> és <code>SUPABASE_ANON_KEY</code> értékét a
+              saját Supabase projekted adataira (Project Settings → API).
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    /* ------------------------------ Login ----------------------------- */
+    function Login() {
+      const [email, setEmail] = useState("");
+      const [pw, setPw] = useState("");
+      const [busy, setBusy] = useState(false);
+      const [err, setErr] = useState("");
+      const [mode, setMode] = useState("in"); // in | up
+
+      const go = async () => {
+        setErr(""); setBusy(true);
+        try {
+          const fn = mode === "in"
+            ? supa.auth.signInWithPassword({ email, password: pw })
+            : supa.auth.signUp({ email, password: pw });
+          const { error } = await fn;
+          if (error) setErr(error.message);
+        } catch (e) { setErr(String(e.message || e)); }
+        setBusy(false);
+      };
+
+      return (
+        <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ width: "100%", maxWidth: 360 }}>
+            <div style={{ textAlign: "center", marginBottom: 22 }}>
+              <div style={{ fontSize: 11, letterSpacing: ".2em", color: C.brass, fontWeight: 600 }}>CUT N' FADE · SHOP</div>
+              <div style={{ fontSize: 26, fontWeight: 700, marginTop: 3 }}>Beszállítók</div>
+            </div>
+            <div style={{ background: "#fff", border: `1px solid ${C.line}`, borderRadius: 16, padding: 20, display: "grid", gap: 13 }}>
+              <div>
+                <span className="lbl">Email</span>
+                <input className="in" type="email" inputMode="email" value={email}
+                  onChange={(e) => setEmail(e.target.value)} placeholder="te@email.hu" />
+              </div>
+              <div>
+                <span className="lbl">Jelszó</span>
+                <input className="in" type="password" value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && go()} placeholder="••••••••" />
+              </div>
+              {err && <div style={{ fontSize: 13, color: C.red, lineHeight: 1.4 }}>{err}</div>}
+              <button className="tap" onClick={go} disabled={busy || !email || !pw}
+                style={{ border: "none", background: (busy || !email || !pw) ? "#D9D4C8" : C.brass,
+                  color: "#fff", fontWeight: 700, fontSize: 15, padding: "13px", borderRadius: 11 }}>
+                {busy ? "Egy pillanat…" : (mode === "in" ? "Belépés" : "Fiók létrehozása")}
+              </button>
+              <button className="tap" onClick={() => { setErr(""); setMode(mode === "in" ? "up" : "in"); }}
+                style={{ border: "none", background: "none", color: C.inkSoft, fontSize: 13, fontWeight: 600, padding: 4 }}>
+                {mode === "in" ? "Nincs még fiókod? Hozz létre egyet" : "Van fiókod? Lépj be"}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ------------------------------- CRM ------------------------------ */
+    function Crm({ session }) {
+      const [list, setList] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [filter, setFilter] = useState("Mind");
+      const [editing, setEditing] = useState(null);
+      const [confirmDel, setConfirmDel] = useState(null);
+      const [err, setErr] = useState("");
+      const [seeded, setSeeded] = useState(false);
+
+      const load = async () => {
+        const { data, error } = await supa.from("beszallitok").select("*").order("nev");
+        if (error) { setErr(error.message); setLoading(false); return; }
+        if ((!data || data.length === 0) && !seeded) {
+          setSeeded(true);
+          await supa.from("beszallitok").insert(seedRows());
+          const again = await supa.from("beszallitok").select("*").order("nev");
+          setList(again.data || []);
+        } else {
+          setList(data || []);
+        }
+        setLoading(false);
+      };
+      useEffect(() => { load(); }, []);
+
+      const save = async (item) => {
+        setErr("");
+        const row = toRow(item);
+        const res = item.id
+          ? await supa.from("beszallitok").update(row).eq("id", item.id)
+          : await supa.from("beszallitok").insert(row);
+        if (res.error) { setErr(res.error.message); return; }
+        setEditing(null); load();
+      };
+      const remove = async (id) => {
+        const { error } = await supa.from("beszallitok").delete().eq("id", id);
+        if (error) { setErr(error.message); return; }
+        setConfirmDel(null); setEditing(null); load();
+      };
+
+      const counts = useMemo(() => {
+        const c = { Mind: list.length };
+        STATUSES.forEach((s) => (c[s.key] = 0));
+        list.forEach((s) => (c[s.statusz] = (c[s.statusz] || 0) + 1));
+        return c;
+      }, [list]);
+
+      const attention = useMemo(
+        () => list.filter((s) => s.statusz !== "Elvetve" && isOverdue(s.kovetkezo_datum)), [list]);
+
+      const visible = useMemo(() => {
+        const arr = filter === "Mind" ? list : list.filter((s) => s.statusz === filter);
+        const ord = (s) => (s.statusz !== "Elvetve" && isOverdue(s.kovetkezo_datum)) ? 0
+          : s.statusz === "Elvetve" ? 3 : s.statusz === "Aktív" ? 2 : 1;
+        return [...arr].sort((a, b) => ord(a) - ord(b) || a.nev.localeCompare(b.nev, "hu"));
+      }, [list, filter]);
+
+      return (
+        <div style={{ minHeight: "100vh", background: C.paper, paddingBottom: 96 }}>
+          <header style={{ position: "sticky", top: 0, zIndex: 20, background: C.ink, color: "#fff" }}>
+            <div style={{ padding: "13px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontSize: 11, letterSpacing: ".18em", color: "#C9A14A", fontWeight: 600 }}>CUT N' FADE · SHOP</div>
+                <div style={{ fontSize: 21, fontWeight: 700, marginTop: 1 }}>Beszállítók</div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 12, color: attention.length ? "#E8A39A" : "#9AA0A8" }}>
+                  {list.length} partner · {attention.length} teendő
+                </div>
+                <button className="tap" onClick={() => supa.auth.signOut()}
+                  style={{ marginTop: 4, border: "1px solid #3A3F47", background: "none", color: "#9AA0A8",
+                    fontSize: 11.5, fontWeight: 600, padding: "4px 9px", borderRadius: 7 }}>Kilépés</button>
+              </div>
+            </div>
+            <div className="pole" style={{ height: 3 }} />
+          </header>
+
+          {err && (
+            <div style={{ margin: "12px 16px 0", background: "#FBEFEC", border: "1px solid #EBC9C2",
+              color: "#8E2E22", fontSize: 13, padding: "10px 12px", borderRadius: 10 }}>{err}</div>
+          )}
+
+          {loading ? (
+            <div style={{ padding: 40, textAlign: "center", color: C.inkSoft }}>Betöltés…</div>
+          ) : (
+            <React.Fragment>
+              {attention.length > 0 && (
+                <div style={{ padding: "12px 16px 0" }}>
+                  <div style={{ background: "#FBEFEC", border: "1px solid #EBC9C2", borderRadius: 12,
+                    padding: "11px 13px", display: "flex", gap: 10, alignItems: "flex-start" }}>
+                    <div style={{ width: 6, alignSelf: "stretch", background: C.red, borderRadius: 4, minHeight: 34 }} />
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14, color: "#8E2E22" }}>
+                        {attention.length} beszállítónál lejárt a teendő határideje
+                      </div>
+                      <div style={{ fontSize: 13, color: "#A05246", marginTop: 2 }}>
+                        {attention.slice(0, 3).map((s) => s.nev).join(", ")}{attention.length > 3 ? ` +${attention.length - 3}` : ""}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="chips" style={{ display: "flex", gap: 8, overflowX: "auto", padding: "14px 16px 4px" }}>
+                {["Mind", ...STATUSES.map((s) => s.key)].map((k) => {
+                  const active = filter === k;
+                  const m = k === "Mind" ? null : statusMeta(k);
+                  return (
+                    <button key={k} className="tap" onClick={() => setFilter(k)}
+                      style={{ flex: "0 0 auto", border: `1px solid ${active ? C.ink : C.line}`,
+                        background: active ? C.ink : "#fff", color: active ? "#fff" : C.inkSoft,
+                        borderRadius: 999, padding: "7px 13px", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}>
+                      {m && <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 99,
+                        background: m.color, marginRight: 6, verticalAlign: "middle" }} />}
+                      {k} <span style={{ opacity: .6, fontWeight: 500 }}>{counts[k] || 0}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div style={{ padding: "8px 16px 0", display: "grid", gap: 11 }}>
+                {visible.length === 0 ? (
+                  <div style={{ padding: "40px 16px", textAlign: "center", color: C.inkSoft, fontSize: 14 }}>
+                    Nincs beszállító ebben a nézetben.
+                  </div>
+                ) : visible.map((s) => {
+                  const overdue = s.statusz !== "Elvetve" && isOverdue(s.kovetkezo_datum);
+                  return (
+                    <div key={s.id} className="tap" onClick={() => setEditing({ ...s })}
+                      style={{ background: C.card, border: `1px solid ${overdue ? "#E7C3BB" : C.line}`,
+                        borderRadius: 14, padding: "13px 14px", boxShadow: "0 1px 2px rgba(20,20,20,.03)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 16.5, fontWeight: 700 }}>{s.nev}</div>
+                          <div style={{ fontSize: 12.5, color: C.inkSoft, marginTop: 1 }}>
+                            {s.kategoria}{s.orszag ? ` · ${s.orszag}` : ""}
+                          </div>
+                        </div>
+                        <Badge status={s.statusz} />
+                      </div>
+                      {s.kovetkezo_lepes ? (
+                        <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "baseline" }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".05em", textTransform: "uppercase",
+                            color: overdue ? C.red : C.brass }}>Teendő</span>
+                          <span style={{ fontSize: 13.5, flex: 1 }}>
+                            {s.kovetkezo_lepes}
+                            {s.kovetkezo_datum && <span style={{ color: overdue ? C.red : C.inkSoft, fontWeight: overdue ? 600 : 400 }}>
+                              {" "}· {fmtDate(s.kovetkezo_datum)}{overdue ? " ⚠" : ""}</span>}
+                          </span>
+                        </div>
+                      ) : <div style={{ marginTop: 10, fontSize: 13, color: "#9AA0A8" }}>Nincs teendő megadva</div>}
+                      {s.utolso_kapcsolat && (
+                        <div style={{ marginTop: 6, fontSize: 12, color: C.inkSoft }}>
+                          Utolsó kapcsolat: {fmtDate(s.utolso_kapcsolat)}{daysAgo(s.utolso_kapcsolat) > 0 ? ` (${daysAgo(s.utolso_kapcsolat)} napja)` : ""}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </React.Fragment>
+          )}
+
+          <button className="tap" onClick={() => setEditing(newSupplier())}
+            style={{ position: "fixed", bottom: 18, left: 16, right: 16, zIndex: 15,
+              background: C.brass, color: "#fff", border: "none", borderRadius: 14, padding: "15px",
+              fontSize: 15.5, fontWeight: 700, boxShadow: "0 6px 18px rgba(169,121,43,.32)" }}>
+            + Új beszállító
+          </button>
+
+          {editing && <Editor item={editing} onClose={() => setEditing(null)} onSave={save} onDelete={(id) => setConfirmDel(id)} />}
+          {confirmDel && <ConfirmDelete name={(list.find((s) => s.id === confirmDel) || {}).nev}
+            onCancel={() => setConfirmDel(null)} onConfirm={() => remove(confirmDel)} />}
+        </div>
+      );
+    }
+
+    function newSupplier() {
+      return { nev: "", kategoria: CATEGORIES[0], orszag: "", kapcsolattarto: "", email: "",
+        telefon: "", statusz: "Megkeresendő", termekek: "", min_rendeles: "", utolso_kapcsolat: "",
+        kovetkezo_lepes: "", kovetkezo_datum: "", jegyzetek: [], _new: true };
+    }
+
+    /* ---------------------------- Szerkesztő -------------------------- */
+    function Editor({ item, onClose, onSave, onDelete }) {
+      const [d, setD] = useState(item);
+      const [note, setNote] = useState("");
+      const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
+      const addNote = () => {
+        const t = note.trim(); if (!t) return;
+        setD((p) => ({ ...p, jegyzetek: [{ datum: today(), szoveg: t }, ...(p.jegyzetek || [])] }));
+        setNote("");
+      };
+      const wa = d.telefon ? "https://wa.me/" + d.telefon.replace(/[^\d]/g, "") : null;
+
+      return (
+        <div style={{ position: "fixed", inset: 0, zIndex: 40, background: "rgba(20,22,26,.45)", display: "flex", flexDirection: "column" }}>
+          <div className="sheet" style={{ marginTop: "auto", background: C.paper, borderTopLeftRadius: 20,
+            borderTopRightRadius: 20, maxHeight: "94vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "14px 16px", borderBottom: `1px solid ${C.line}`, background: "#fff" }}>
+              <button onClick={onClose} className="tap" style={{ border: "none", background: "none",
+                color: C.inkSoft, fontSize: 15, fontWeight: 600 }}>Mégse</button>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>{item._new ? "Új beszállító" : "Szerkesztés"}</div>
+              <button onClick={() => d.nev.trim() && onSave({ ...d, _new: undefined })} className="tap"
+                style={{ border: "none", background: d.nev.trim() ? C.brass : "#D9D4C8", color: "#fff",
+                  fontSize: 14.5, fontWeight: 700, padding: "8px 15px", borderRadius: 10 }}>Mentés</button>
+            </div>
+
+            <div style={{ overflowY: "auto", padding: 16, display: "grid", gap: 16 }}>
+              <Field label="Név *"><input className="in" value={d.nev} onChange={(e) => set("nev", e.target.value)} placeholder="pl. Gamma Più" autoFocus={item._new} /></Field>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <Field label="Kategória"><select className="in" value={d.kategoria} onChange={(e) => set("kategoria", e.target.value)}>{CATEGORIES.map((c) => <option key={c}>{c}</option>)}</select></Field>
+                <Field label="Ország"><input className="in" value={d.orszag} onChange={(e) => set("orszag", e.target.value)} placeholder="pl. Olaszország" /></Field>
+              </div>
+              <div>
+                <span className="lbl">Státusz</span>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+                  {STATUSES.map((s) => {
+                    const on = d.statusz === s.key;
+                    return <button key={s.key} className="tap" onClick={() => set("statusz", s.key)}
+                      style={{ border: `1px solid ${on ? s.color : C.line}`, background: on ? s.bg : "#fff",
+                        color: on ? s.color : C.inkSoft, fontWeight: 600, fontSize: 13, padding: "8px 12px", borderRadius: 999 }}>{s.key}</button>;
+                  })}
+                </div>
+              </div>
+              <Field label="Kapcsolattartó"><input className="in" value={d.kapcsolattarto} onChange={(e) => set("kapcsolattarto", e.target.value)} /></Field>
+              <Field label="Email"><input className="in" type="email" inputMode="email" value={d.email} onChange={(e) => set("email", e.target.value)} placeholder="info@..." /></Field>
+              <Field label="Telefon / WhatsApp"><input className="in" type="tel" inputMode="tel" value={d.telefon} onChange={(e) => set("telefon", e.target.value)} placeholder="+39 ..." /></Field>
+              {(d.email || wa) && (
+                <div style={{ display: "flex", gap: 8, marginTop: -6 }}>
+                  {wa && <a href={wa} target="_blank" rel="noreferrer" className="tap" style={{ flex: 1, textAlign: "center",
+                    textDecoration: "none", background: "#E4F4EE", color: "#1F8A6D", fontWeight: 600, fontSize: 13.5, padding: 10, borderRadius: 10 }}>WhatsApp</a>}
+                  {d.email && <a href={"mailto:" + d.email} className="tap" style={{ flex: 1, textAlign: "center",
+                    textDecoration: "none", background: "#E8F1F8", color: "#2F6F9F", fontWeight: 600, fontSize: 13.5, padding: 10, borderRadius: 10 }}>Email írása</a>}
+                </div>
+              )}
+              <Field label="Termékek / kínálat"><textarea className="in" rows={2} value={d.termekek} onChange={(e) => set("termekek", e.target.value)} style={{ resize: "vertical" }} /></Field>
+              <Field label="Min. rendelés / árazás"><input className="in" value={d.min_rendeles} onChange={(e) => set("min_rendeles", e.target.value)} /></Field>
+
+              <div style={{ background: "#fff", border: `1px solid ${C.line}`, borderRadius: 14, padding: 13, display: "grid", gap: 13 }}>
+                <Field label="Következő lépés"><input className="in" value={d.kovetkezo_lepes} onChange={(e) => set("kovetkezo_lepes", e.target.value)} placeholder="pl. Árlista bekérése WhatsApp-on" /></Field>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <Field label="Határidő"><input className="in" type="date" value={d.kovetkezo_datum || ""} onChange={(e) => set("kovetkezo_datum", e.target.value)} /></Field>
+                  <Field label="Utolsó kapcsolat"><input className="in" type="date" value={d.utolso_kapcsolat || ""} onChange={(e) => set("utolso_kapcsolat", e.target.value)} /></Field>
+                </div>
+                <button className="tap" onClick={() => set("utolso_kapcsolat", today())}
+                  style={{ border: `1px dashed ${C.brass}`, background: "#F6EEDD", color: C.brassDark,
+                    fontWeight: 600, fontSize: 13, padding: 9, borderRadius: 10 }}>Kapcsolat ma rögzítése</button>
+              </div>
+
+              <div>
+                <span className="lbl">Jegyzetek / napló</span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input className="in" value={note} onChange={(e) => setNote(e.target.value)}
+                    placeholder="Új bejegyzés…" onKeyDown={(e) => e.key === "Enter" && addNote()} />
+                  <button className="tap" onClick={addNote} style={{ border: "none", background: C.ink,
+                    color: "#fff", fontWeight: 700, fontSize: 14, padding: "0 16px", borderRadius: 10 }}>+</button>
+                </div>
+                <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                  {(d.jegyzetek || []).length === 0 && <div style={{ fontSize: 13, color: "#9AA0A8" }}>Még nincs bejegyzés.</div>}
+                  {(d.jegyzetek || []).map((j, i) => (
+                    <div key={i} style={{ background: "#fff", border: `1px solid ${C.line}`, borderRadius: 10, padding: "9px 11px" }}>
+                      <div style={{ fontSize: 11, color: C.brass, fontWeight: 600, marginBottom: 3 }}>{fmtDate(j.datum)}</div>
+                      <div style={{ fontSize: 13.5, lineHeight: 1.4 }}>{j.szoveg}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {!item._new && (
+                <button className="tap" onClick={() => onDelete(d.id)}
+                  style={{ border: "1px solid #E7C3BB", background: "#FBEFEC", color: C.red,
+                    fontWeight: 600, fontSize: 14, padding: 12, borderRadius: 12, marginTop: 4 }}>Beszállító törlése</button>
+              )}
+              <div style={{ height: 8 }} />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Field({ label, children }) {
+      return <label style={{ display: "block" }}><span className="lbl">{label}</span>{children}</label>;
+    }
+
+    function ConfirmDelete({ name, onCancel, onConfirm }) {
+      return (
+        <div style={{ position: "fixed", inset: 0, zIndex: 50, background: "rgba(20,22,26,.5)",
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div className="sheet" style={{ background: "#fff", borderRadius: 16, padding: 20, maxWidth: 340, width: "100%" }}>
+            <div style={{ fontSize: 16.5, fontWeight: 700, marginBottom: 6 }}>Törlöd?</div>
+            <div style={{ fontSize: 14, color: C.inkSoft, lineHeight: 1.45 }}>„{name}" véglegesen törlődik a jegyzeteivel együtt. Ez nem vonható vissza.</div>
+            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+              <button className="tap" onClick={onCancel} style={{ flex: 1, border: `1px solid ${C.line}`,
+                background: "#fff", color: C.ink, fontWeight: 600, fontSize: 14.5, padding: 12, borderRadius: 11 }}>Mégse</button>
+              <button className="tap" onClick={onConfirm} style={{ flex: 1, border: "none", background: C.red,
+                color: "#fff", fontWeight: 700, fontSize: 14.5, padding: 12, borderRadius: 11 }}>Törlés</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ------------------------------- App ------------------------------ */
+    function App() {
+      const [session, setSession] = useState(undefined);
+      useEffect(() => {
+        if (!supa) return;
+        supa.auth.getSession().then(({ data }) => setSession(data.session));
+        const { data: sub } = supa.auth.onAuthStateChange((_e, s) => setSession(s));
+        return () => sub.subscription.unsubscribe();
+      }, []);
+
+      if (!configured) return <NeedsConfig />;
+      if (session === undefined) return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: C.inkSoft }}>Betöltés…</div>;
+      if (!session) return <Login />;
+      return <Crm session={session} />;
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
