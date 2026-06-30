@@ -11,7 +11,6 @@
 
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.3/dist/umd/supabase.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
   <style>
@@ -44,18 +43,112 @@
     const { useState, useEffect, useMemo } = React;
 
     /* ============================================================
-       BEÁLLÍTÁS — ide jön a Supabase projekted két adata.
-       Supabase → Project Settings → API
+       BEÁLLÍTÁS — a te Supabase projekted adatai
        ============================================================ */
-    const SUPABASE_URL      = "https://zeratolucqbxpbxncbyy.supabase.co";       // pl. https://abcd1234.supabase.co
-    const SUPABASE_ANON_KEY = "sb_publishable_DHWBbu7yG-uPpgqpENLYiw__BSK5LVg";   // a "anon public" kulcs
+    const SUPABASE_URL = "https://zeratolucqbxpbxncbyy.supabase.co";
+    const SUPABASE_KEY = "sb_publishable_DHWBbu7yG-uPpgqpENLYiw__BSK5LVg";
     /* ============================================================ */
 
+    const configured = SUPABASE_URL.indexOf("supabase.co") > -1 && SUPABASE_KEY.indexOf("sb_") === 0;
+    const REST = SUPABASE_URL + "/rest/v1";
+    const AUTH = SUPABASE_URL + "/auth/v1";
+    const LS_KEY = "cnf_session_v1";
+
+    /* ---- session (localStorage – itt működik, ez nem chat-artifact) ---- */
+    let SESSION = null;
+    try { SESSION = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) {}
+    function setSession(s) {
+      SESSION = (s && s.access_token) ? s : null;
+      try {
+        if (SESSION) localStorage.setItem(LS_KEY, JSON.stringify(SESSION));
+        else localStorage.removeItem(LS_KEY);
+      } catch (e) {}
+    }
+
+    async function refreshSession() {
+      if (!SESSION || !SESSION.refresh_token) return false;
+      try {
+        const r = await fetch(AUTH + "/token?grant_type=refresh_token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "apikey": SUPABASE_KEY },
+          body: JSON.stringify({ refresh_token: SESSION.refresh_token }),
+        });
+        if (!r.ok) return false;
+        setSession(await r.json());
+        return true;
+      } catch (e) { return false; }
+    }
+
+    /* ---- auth ---- */
+    async function authSignIn(email, password) {
+      const r = await fetch(AUTH + "/token?grant_type=password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "apikey": SUPABASE_KEY },
+        body: JSON.stringify({ email, password }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error_description || d.msg || d.error || "Belépés sikertelen");
+      return d;
+    }
+    async function authSignUp(email, password) {
+      const r = await fetch(AUTH + "/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "apikey": SUPABASE_KEY },
+        body: JSON.stringify({ email, password }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.msg || d.error_description || d.error || "Regisztráció sikertelen");
+      return d;
+    }
+
+    /* ---- DB (PostgREST) ---- */
+    async function req(path, opts, _retry) {
+      opts = opts || {};
+      const headers = Object.assign({
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + (SESSION ? SESSION.access_token : SUPABASE_KEY),
+      }, opts.headers || {});
+      const r = await fetch(REST + path, Object.assign({}, opts, { headers }));
+      if (r.status === 401 && SESSION && !_retry) {
+        const ok = await refreshSession();
+        if (ok) return req(path, opts, true);
+      }
+      return r;
+    }
+    async function dbSelect() {
+      const r = await req("/beszallitok?select=*&order=nev.asc");
+      if (r.status === 401) { const e = new Error("auth"); e.auth = true; throw e; }
+      if (!r.ok) throw new Error("Betöltés (" + r.status + ")");
+      return r.json();
+    }
+    async function dbInsert(rows) {
+      const r = await req("/beszallitok", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Prefer": "return=representation" },
+        body: JSON.stringify(rows),
+      });
+      if (!r.ok) throw new Error("Mentés (" + r.status + ") " + (await r.text()));
+      return r.json();
+    }
+    async function dbUpdate(id, row) {
+      const r = await req("/beszallitok?id=eq." + id, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "Prefer": "return=representation" },
+        body: JSON.stringify(row),
+      });
+      if (!r.ok) throw new Error("Módosítás (" + r.status + ")");
+      return r.json();
+    }
+    async function dbDelete(id) {
+      const r = await req("/beszallitok?id=eq." + id, { method: "DELETE" });
+      if (!r.ok) throw new Error("Törlés (" + r.status + ")");
+    }
+
+    /* ------------------------------ adat ------------------------------ */
     const C = {
       ink: "#1B1E24", inkSoft: "#5A6068", paper: "#F6F4EF", card: "#FFFFFF",
       line: "#E6E2D8", brass: "#A9792B", brassDark: "#8A6322", red: "#C0392B",
     };
-
     const STATUSES = [
       { key: "Megkeresendő", color: "#8A8F98", bg: "#F0F0EE" },
       { key: "Megkeresve",  color: "#2F6F9F", bg: "#E8F1F8" },
@@ -69,7 +162,6 @@
       "Kozmetikum (egyéb)", "Logisztika / szállítás", "Egyéb",
     ];
     const statusMeta = (k) => STATUSES.find((s) => s.key === k) || STATUSES[0];
-
     const today = () => new Date().toISOString().slice(0, 10);
     const fmtDate = (iso) => {
       if (!iso) return "";
@@ -79,10 +171,6 @@
     const isOverdue = (iso) => !!iso && iso <= today();
     const daysAgo = (iso) => iso ? Math.round((Date.now() - new Date(iso + "T00:00:00").getTime()) / 86400000) : null;
 
-    const configured = !SUPABASE_URL.startsWith("IDE_") && !SUPABASE_ANON_KEY.startsWith("IDE_");
-    const supa = configured ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
-
-    /* kiinduló 7 beszállító (user_id-t a DB tölti) */
     const seedRows = () => ([
       { nev: "Gamma Più", kategoria: "Hardver (olasz)", orszag: "Olaszország", termekek: "Hajvágó gépek, ollók, hajszárítók.", kovetkezo_lepes: "Ravanello-n keresztül egyeztetni",
         jegyzetek: [{ datum: today(), szoveg: "Olasz B2B — WhatsApp/telefon jobban működik, mint email. Nyáron lassabb." }] },
@@ -93,11 +181,11 @@
         jegyzetek: [{ datum: today(), szoveg: "Az EU kozmetikai megfelelőség intézését vállalja." }] },
       { nev: "HappySkin", kategoria: "Kozmetikum bérgyártó (HU)", orszag: "Magyarország", termekek: "Saját márkás kozmetikum (bérgyártás).", jegyzetek: [] },
       { nev: "ZeenLab", kategoria: "Kozmetikum bérgyártó (HU)", orszag: "Magyarország", termekek: "Saját márkás kozmetikum (bérgyártás).", jegyzetek: [] },
-    ].map((r) => ({
+    ].map((r) => Object.assign({
       kategoria: "Egyéb", orszag: "", kapcsolattarto: "", email: "", telefon: "",
       statusz: "Megkeresendő", termekek: "", min_rendeles: "", utolso_kapcsolat: null,
-      kovetkezo_lepes: "", kovetkezo_datum: null, jegyzetek: [], ...r,
-    })));
+      kovetkezo_lepes: "", kovetkezo_datum: null, jegyzetek: [],
+    }, r)));
 
     const toRow = (d) => ({
       nev: d.nev.trim(), kategoria: d.kategoria, orszag: d.orszag || "",
@@ -122,9 +210,7 @@
             <div className="pole" style={{ height: 4, borderRadius: 4, marginBottom: 16 }} />
             <h1 style={{ fontSize: 19, fontWeight: 700 }}>Még be kell állítani</h1>
             <p style={{ fontSize: 14.5, color: C.inkSoft, lineHeight: 1.5, marginTop: 10 }}>
-              Nyisd meg az <code>index.html</code>-t, és a tetején lévő <b>BEÁLLÍTÁS</b> blokkban
-              cseréld ki a <code>SUPABASE_URL</code> és <code>SUPABASE_ANON_KEY</code> értékét a
-              saját Supabase projekted adataira (Project Settings → API).
+              Az <code>index.html</code> tetején a BEÁLLÍTÁS blokkban töltsd ki a Supabase URL-t és a kulcsot.
             </p>
           </div>
         </div>
@@ -132,21 +218,29 @@
     }
 
     /* ------------------------------ Login ----------------------------- */
-    function Login() {
+    function Login({ onAuth }) {
       const [email, setEmail] = useState("");
       const [pw, setPw] = useState("");
       const [busy, setBusy] = useState(false);
       const [err, setErr] = useState("");
-      const [mode, setMode] = useState("in"); // in | up
+      const [mode, setMode] = useState("in");
 
       const go = async () => {
         setErr(""); setBusy(true);
         try {
-          const fn = mode === "in"
-            ? supa.auth.signInWithPassword({ email, password: pw })
-            : supa.auth.signUp({ email, password: pw });
-          const { error } = await fn;
-          if (error) setErr(error.message);
+          if (mode === "in") {
+            const s = await authSignIn(email, pw);
+            setSession(s); onAuth();
+          } else {
+            const d = await authSignUp(email, pw);
+            if (d.access_token) { setSession(d); onAuth(); }
+            else {
+              try { const s = await authSignIn(email, pw); setSession(s); onAuth(); }
+              catch (e) {
+                setErr("Fiók létrehozva. Ha be van kapcsolva az email-megerősítés, erősítsd meg a leveledben, majd lépj be — vagy kapcsold ki a Supabase Auth beállításában.");
+              }
+            }
+          }
         } catch (e) { setErr(String(e.message || e)); }
         setBusy(false);
       };
@@ -187,7 +281,7 @@
     }
 
     /* ------------------------------- CRM ------------------------------ */
-    function Crm({ session }) {
+    function Crm({ onSignOut }) {
       const [list, setList] = useState([]);
       const [loading, setLoading] = useState(true);
       const [filter, setFilter] = useState("Mind");
@@ -197,15 +291,17 @@
       const [seeded, setSeeded] = useState(false);
 
       const load = async () => {
-        const { data, error } = await supa.from("beszallitok").select("*").order("nev");
-        if (error) { setErr(error.message); setLoading(false); return; }
-        if ((!data || data.length === 0) && !seeded) {
-          setSeeded(true);
-          await supa.from("beszallitok").insert(seedRows());
-          const again = await supa.from("beszallitok").select("*").order("nev");
-          setList(again.data || []);
-        } else {
+        try {
+          let data = await dbSelect();
+          if ((!data || data.length === 0) && !seeded) {
+            setSeeded(true);
+            await dbInsert(seedRows());
+            data = await dbSelect();
+          }
           setList(data || []);
+        } catch (e) {
+          if (e.auth) { onSignOut(); return; }
+          setErr(String(e.message || e));
         }
         setLoading(false);
       };
@@ -213,17 +309,15 @@
 
       const save = async (item) => {
         setErr("");
-        const row = toRow(item);
-        const res = item.id
-          ? await supa.from("beszallitok").update(row).eq("id", item.id)
-          : await supa.from("beszallitok").insert(row);
-        if (res.error) { setErr(res.error.message); return; }
-        setEditing(null); load();
+        try {
+          if (item.id) await dbUpdate(item.id, toRow(item));
+          else await dbInsert(toRow(item));
+          setEditing(null); load();
+        } catch (e) { setErr(String(e.message || e)); }
       };
       const remove = async (id) => {
-        const { error } = await supa.from("beszallitok").delete().eq("id", id);
-        if (error) { setErr(error.message); return; }
-        setConfirmDel(null); setEditing(null); load();
+        try { await dbDelete(id); setConfirmDel(null); setEditing(null); load(); }
+        catch (e) { setErr(String(e.message || e)); }
       };
 
       const counts = useMemo(() => {
@@ -232,15 +326,13 @@
         list.forEach((s) => (c[s.statusz] = (c[s.statusz] || 0) + 1));
         return c;
       }, [list]);
-
       const attention = useMemo(
         () => list.filter((s) => s.statusz !== "Elvetve" && isOverdue(s.kovetkezo_datum)), [list]);
-
       const visible = useMemo(() => {
         const arr = filter === "Mind" ? list : list.filter((s) => s.statusz === filter);
         const ord = (s) => (s.statusz !== "Elvetve" && isOverdue(s.kovetkezo_datum)) ? 0
           : s.statusz === "Elvetve" ? 3 : s.statusz === "Aktív" ? 2 : 1;
-        return [...arr].sort((a, b) => ord(a) - ord(b) || a.nev.localeCompare(b.nev, "hu"));
+        return arr.slice().sort((a, b) => ord(a) - ord(b) || a.nev.localeCompare(b.nev, "hu"));
       }, [list, filter]);
 
       return (
@@ -255,7 +347,7 @@
                 <div style={{ fontSize: 12, color: attention.length ? "#E8A39A" : "#9AA0A8" }}>
                   {list.length} partner · {attention.length} teendő
                 </div>
-                <button className="tap" onClick={() => supa.auth.signOut()}
+                <button className="tap" onClick={() => { setSession(null); onSignOut(); }}
                   style={{ marginTop: 4, border: "1px solid #3A3F47", background: "none", color: "#9AA0A8",
                     fontSize: 11.5, fontWeight: 600, padding: "4px 9px", borderRadius: 7 }}>Kilépés</button>
               </div>
@@ -282,7 +374,7 @@
                         {attention.length} beszállítónál lejárt a teendő határideje
                       </div>
                       <div style={{ fontSize: 13, color: "#A05246", marginTop: 2 }}>
-                        {attention.slice(0, 3).map((s) => s.nev).join(", ")}{attention.length > 3 ? ` +${attention.length - 3}` : ""}
+                        {attention.slice(0, 3).map((s) => s.nev).join(", ")}{attention.length > 3 ? " +" + (attention.length - 3) : ""}
                       </div>
                     </div>
                   </div>
@@ -290,7 +382,7 @@
               )}
 
               <div className="chips" style={{ display: "flex", gap: 8, overflowX: "auto", padding: "14px 16px 4px" }}>
-                {["Mind", ...STATUSES.map((s) => s.key)].map((k) => {
+                {["Mind"].concat(STATUSES.map((s) => s.key)).map((k) => {
                   const active = filter === k;
                   const m = k === "Mind" ? null : statusMeta(k);
                   return (
@@ -314,14 +406,14 @@
                 ) : visible.map((s) => {
                   const overdue = s.statusz !== "Elvetve" && isOverdue(s.kovetkezo_datum);
                   return (
-                    <div key={s.id} className="tap" onClick={() => setEditing({ ...s })}
+                    <div key={s.id} className="tap" onClick={() => setEditing(Object.assign({}, s))}
                       style={{ background: C.card, border: `1px solid ${overdue ? "#E7C3BB" : C.line}`,
                         borderRadius: 14, padding: "13px 14px", boxShadow: "0 1px 2px rgba(20,20,20,.03)" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontSize: 16.5, fontWeight: 700 }}>{s.nev}</div>
                           <div style={{ fontSize: 12.5, color: C.inkSoft, marginTop: 1 }}>
-                            {s.kategoria}{s.orszag ? ` · ${s.orszag}` : ""}
+                            {s.kategoria}{s.orszag ? " · " + s.orszag : ""}
                           </div>
                         </div>
                         <Badge status={s.statusz} />
@@ -333,13 +425,13 @@
                           <span style={{ fontSize: 13.5, flex: 1 }}>
                             {s.kovetkezo_lepes}
                             {s.kovetkezo_datum && <span style={{ color: overdue ? C.red : C.inkSoft, fontWeight: overdue ? 600 : 400 }}>
-                              {" "}· {fmtDate(s.kovetkezo_datum)}{overdue ? " ⚠" : ""}</span>}
+                              {" · " + fmtDate(s.kovetkezo_datum) + (overdue ? " ⚠" : "")}</span>}
                           </span>
                         </div>
                       ) : <div style={{ marginTop: 10, fontSize: 13, color: "#9AA0A8" }}>Nincs teendő megadva</div>}
                       {s.utolso_kapcsolat && (
                         <div style={{ marginTop: 6, fontSize: 12, color: C.inkSoft }}>
-                          Utolsó kapcsolat: {fmtDate(s.utolso_kapcsolat)}{daysAgo(s.utolso_kapcsolat) > 0 ? ` (${daysAgo(s.utolso_kapcsolat)} napja)` : ""}
+                          Utolsó kapcsolat: {fmtDate(s.utolso_kapcsolat)}{daysAgo(s.utolso_kapcsolat) > 0 ? " (" + daysAgo(s.utolso_kapcsolat) + " napja)" : ""}
                         </div>
                       )}
                     </div>
@@ -373,10 +465,10 @@
     function Editor({ item, onClose, onSave, onDelete }) {
       const [d, setD] = useState(item);
       const [note, setNote] = useState("");
-      const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
+      const set = (k, v) => setD((p) => Object.assign({}, p, { [k]: v }));
       const addNote = () => {
         const t = note.trim(); if (!t) return;
-        setD((p) => ({ ...p, jegyzetek: [{ datum: today(), szoveg: t }, ...(p.jegyzetek || [])] }));
+        setD((p) => Object.assign({}, p, { jegyzetek: [{ datum: today(), szoveg: t }].concat(p.jegyzetek || []) }));
         setNote("");
       };
       const wa = d.telefon ? "https://wa.me/" + d.telefon.replace(/[^\d]/g, "") : null;
@@ -390,7 +482,7 @@
               <button onClick={onClose} className="tap" style={{ border: "none", background: "none",
                 color: C.inkSoft, fontSize: 15, fontWeight: 600 }}>Mégse</button>
               <div style={{ fontSize: 15, fontWeight: 700 }}>{item._new ? "Új beszállító" : "Szerkesztés"}</div>
-              <button onClick={() => d.nev.trim() && onSave({ ...d, _new: undefined })} className="tap"
+              <button onClick={() => d.nev.trim() && onSave(Object.assign({}, d, { _new: undefined }))} className="tap"
                 style={{ border: "none", background: d.nev.trim() ? C.brass : "#D9D4C8", color: "#fff",
                   fontSize: 14.5, fontWeight: 700, padding: "8px 15px", borderRadius: 10 }}>Mentés</button>
             </div>
@@ -492,18 +584,11 @@
 
     /* ------------------------------- App ------------------------------ */
     function App() {
-      const [session, setSession] = useState(undefined);
-      useEffect(() => {
-        if (!supa) return;
-        supa.auth.getSession().then(({ data }) => setSession(data.session));
-        const { data: sub } = supa.auth.onAuthStateChange((_e, s) => setSession(s));
-        return () => sub.subscription.unsubscribe();
-      }, []);
-
+      const [session, setSess] = useState(SESSION);
+      const apply = () => setSess(SESSION);
       if (!configured) return <NeedsConfig />;
-      if (session === undefined) return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: C.inkSoft }}>Betöltés…</div>;
-      if (!session) return <Login />;
-      return <Crm session={session} />;
+      if (!session) return <Login onAuth={apply} />;
+      return <Crm onSignOut={apply} />;
     }
 
     ReactDOM.createRoot(document.getElementById("root")).render(<App />);
