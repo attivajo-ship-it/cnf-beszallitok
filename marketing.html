@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Marketing" />
+  <meta name="theme-color" content="#1B1E24" />
+  <title>CNF Marketing segéd</title>
+
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&display=swap');
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; }
+    html, body, #root { height: 100%; }
+    body { font-family: 'Archivo', -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
+      background: #F6F4EF; color: #1B1E24; -webkit-font-smoothing: antialiased; }
+    .chips::-webkit-scrollbar { display: none; }
+    .tap { cursor: pointer; transition: transform .06s ease, background .12s ease, border-color .12s ease; }
+    .tap:active { transform: scale(.985); }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible {
+      outline: 2px solid #A9792B; outline-offset: 2px; }
+    .pole { background: repeating-linear-gradient(115deg, #A9792B 0 10px, #C9A14A 10px 20px, #1B1E24 20px 30px); }
+    .in { width: 100%; padding: 11px 12px; border: 1px solid #E6E2D8; border-radius: 10px;
+      font-size: 15px; color: #1B1E24; background: #fff; font-family: inherit; }
+    .in:focus { border-color: #A9792B; }
+    .lbl { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+      color: #5A6068; margin-bottom: 5px; display: block; }
+    @media (prefers-reduced-motion: reduce) { .tap { transition: none; } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+const {
+  useState,
+  useEffect
+} = React;
+
+/* ============================================================
+   BEÁLLÍTÁS — ugyanaz a Supabase projekt, mint a CRM-nél
+   ============================================================ */
+const SUPABASE_URL = "https://zeratolucqbxpbxncbyy.supabase.co";
+const SUPABASE_KEY = "sb_publishable_DHWBbu7yG-uPpgqpENLYiw__BSK5LVg";
+const PROXY = SUPABASE_URL + "/functions/v1/claude-proxy";
+/* ============================================================ */
+
+const configured = SUPABASE_URL.indexOf("supabase.co") > -1 && SUPABASE_KEY.indexOf("sb_") === 0;
+const AUTH = SUPABASE_URL + "/auth/v1";
+const LS_KEY = "cnf_mkt_session_v1";
+
+/* ---- session ---- */
+let SESSION = null;
+try {
+  SESSION = JSON.parse(localStorage.getItem(LS_KEY) || "null");
+} catch (e) {}
+function setSession(s) {
+  SESSION = s && s.access_token ? s : null;
+  try {
+    if (SESSION) localStorage.setItem(LS_KEY, JSON.stringify(SESSION));else localStorage.removeItem(LS_KEY);
+  } catch (e) {}
+}
+async function refreshSession() {
+  if (!SESSION || !SESSION.refresh_token) return false;
+  try {
+    const r = await fetch(AUTH + "/token?grant_type=refresh_token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_KEY
+      },
+      body: JSON.stringify({
+        refresh_token: SESSION.refresh_token
+      })
+    });
+    if (!r.ok) return false;
+    setSession(await r.json());
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+async function authSignIn(email, password) {
+  const r = await fetch(AUTH + "/token?grant_type=password", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": SUPABASE_KEY
+    },
+    body: JSON.stringify({
+      email,
+      password
+    })
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error_description || d.msg || d.error || "Belépés sikertelen");
+  return d;
+}
+
+/* ---- Claude hívás a proxyn keresztül ---- */
+async function askClaude(system, userText, _retry) {
+  const r = await fetch(PROXY, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": SUPABASE_KEY,
+      "Authorization": "Bearer " + (SESSION ? SESSION.access_token : SUPABASE_KEY)
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1024,
+      system: system,
+      messages: [{
+        role: "user",
+        content: userText
+      }]
+    })
+  });
+  if (r.status === 401 && SESSION && !_retry) {
+    const ok = await refreshSession();
+    if (ok) return askClaude(system, userText, true);
+  }
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || data.message || "Hiba (" + r.status + ")");
+  if (data.error) throw new Error(typeof data.error === "string" ? data.error : data.error.message || "API hiba");
+  const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+  if (!text) throw new Error("Üres válasz érkezett.");
+  return text;
+}
+
+/* ------------------------------ stílus ---------------------------- */
+const C = {
+  ink: "#1B1E24",
+  inkSoft: "#5A6068",
+  paper: "#F6F4EF",
+  card: "#FFFFFF",
+  line: "#E6E2D8",
+  brass: "#A9792B",
+  brassDark: "#8A6322",
+  red: "#C0392B"
+};
+
+/* ---------------------------- MÓDOK ------------------------------- */
+const SHOP = "Cut N' Fade barbershop (Nyíregyháza) és barber/kozmetikai webshop";
+const MODES = [{
+  id: "poszt",
+  label: "Poszt",
+  cim: "Instagram / Facebook poszt",
+  system: "Te egy magyar közösségimédia-szövegíró vagy egy barbershop és barber-webshop számára (" + SHOP + "). Írj ütős, természetes magyar közösségimédia-posztot. Kerüld a mesterkélt, reklámízű mondatokat. Használj 1-3 találó emojit és a végén egy rövid cselekvésre ösztönzést (CTA). Ne használj túl sok hashtaget a szövegben. Csak a posztot add vissza, magyarázat nélkül.",
+  fields: [{
+    k: "tema",
+    label: "Miről szóljon?",
+    ph: "pl. friss fade akció, új Uppercut termékek, nyári nyitvatartás",
+    area: true
+  }, {
+    k: "hangnem",
+    label: "Hangnem",
+    ph: "pl. laza, humoros / profi / közvetlen",
+    area: false
+  }],
+  build: v => "Téma: " + v.tema + "\nHangnem: " + (v.hangnem || "laza, közvetlen") + "\n\nÍrj egy posztot ehhez."
+}, {
+  id: "termek",
+  label: "Termék",
+  cim: "Termékleírás (webshop)",
+  system: "Te egy magyar webshop-szövegíró vagy egy barber/kozmetikai boltnak (" + SHOP + "). Írj meggyőző, mégis természetes magyar termékleírást webshopba. Emeld ki az előnyöket (nem csak a jellemzőket), hogy kinek és mire jó. Ne találj ki valótlan adatot — csak a megadott infókból dolgozz. A hossz legyen kb. 2-4 mondat, plusz ha van értelme, egy rövid tulajdonság-felsorolás. Csak a leírást add vissza.",
+  fields: [{
+    k: "nev",
+    label: "Termék neve",
+    ph: "pl. Uppercut Deluxe Pomade",
+    area: false
+  }, {
+    k: "info",
+    label: "Jellemzők / nyers infó",
+    ph: "pl. erős tartás, olajbázisú, fényes finish, vízzel kimosható, 100g, karamell illat",
+    area: true
+  }],
+  build: v => "Termék: " + v.nev + "\nJellemzők: " + v.info + "\n\nÍrj ehhez webshop-termékleírást."
+}, {
+  id: "hirdetes",
+  label: "Hirdetés",
+  cim: "Hirdetésszöveg",
+  system: "Te egy magyar hirdetésszöveg-író vagy egy barbershop és webshop számára (" + SHOP + "). Írj rövid, figyelemfelkeltő hirdetésszöveget a megadott platformra. Legyen erős a nyitó mondat (hook), világos az ajánlat, és a végén egyértelmű CTA. Tartsd tömören. Adj vissza 2 különböző változatot, egymástól elválasztva.",
+  fields: [{
+    k: "mit",
+    label: "Mit hirdetsz?",
+    ph: "pl. -20% az első hajvágásra új vendégeknek",
+    area: true
+  }, {
+    k: "platform",
+    label: "Platform",
+    ph: "pl. Facebook Ads / Instagram / Google",
+    area: false
+  }],
+  build: v => "Ajánlat: " + v.mit + "\nPlatform: " + (v.platform || "Facebook/Instagram") + "\n\nÍrj hirdetésszöveget."
+}, {
+  id: "story",
+  label: "Story",
+  cim: "Story-ötlet + hashtag",
+  system: "Te egy magyar közösségimédia-stratéga vagy egy barbershop/webshop számára (" + SHOP + "). Adj vissza: 1) egy konkrét, könnyen megvalósítható Instagram/Facebook story-ötletet (mit vegyen fel/mutasson, pár lépésben), és 2) egy 10-15 elemből álló releváns magyar+angol hashtag-csomagot. Legyen gyakorlatias.",
+  fields: [{
+    k: "tema",
+    label: "Téma / apropó",
+    ph: "pl. napi munka a szkben, új termék bemutató, vendég átalakulás",
+    area: true
+  }],
+  build: v => "Téma: " + v.tema + "\n\nAdj story-ötletet és hashtag-csomagot."
+}];
+
+/* ------------------------------ Login ----------------------------- */
+function Login({
+  onAuth
+}) {
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const go = async () => {
+    setErr("");
+    setBusy(true);
+    try {
+      const s = await authSignIn(email, pw);
+      setSession(s);
+      onAuth();
+    } catch (e) {
+      setErr(String(e.message || e));
+    }
+    setBusy(false);
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: "100%",
+      maxWidth: 360
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginBottom: 22
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      letterSpacing: ".2em",
+      color: C.brass,
+      fontWeight: 600
+    }
+  }, "CUT N' FADE · SHOP"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 26,
+      fontWeight: 700,
+      marginTop: 3
+    }
+  }, "Marketing segéd")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#fff",
+      border: "1px solid " + C.line,
+      borderRadius: 16,
+      padding: 20,
+      display: "grid",
+      gap: 13
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
+    className: "lbl"
+  }, "Email"), /*#__PURE__*/React.createElement("input", {
+    className: "in",
+    type: "email",
+    inputMode: "email",
+    value: email,
+    onChange: e => setEmail(e.target.value),
+    placeholder: "te@email.hu"
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
+    className: "lbl"
+  }, "Jelszó"), /*#__PURE__*/React.createElement("input", {
+    className: "in",
+    type: "password",
+    value: pw,
+    onChange: e => setPw(e.target.value),
+    onKeyDown: e => e.key === "Enter" && go(),
+    placeholder: "••••••••"
+  })), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: C.red,
+      lineHeight: 1.4
+    }
+  }, err), /*#__PURE__*/React.createElement("button", {
+    className: "tap",
+    onClick: go,
+    disabled: busy || !email || !pw,
+    style: {
+      border: "none",
+      background: busy || !email || !pw ? "#D9D4C8" : C.brass,
+      color: "#fff",
+      fontWeight: 700,
+      fontSize: 15,
+      padding: "13px",
+      borderRadius: 11
+    }
+  }, busy ? "Egy pillanat…" : "Belépés"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.inkSoft,
+      textAlign: "center",
+      lineHeight: 1.4
+    }
+  }, "Ugyanaz a fiók, mint a beszállító-CRM-nél."))));
+}
+
+/* ------------------------------- App ------------------------------ */
+function App() {
+  const [session, setSess] = useState(SESSION);
+  const [modeId, setModeId] = useState("poszt");
+  const [vals, setVals] = useState({});
+  const [out, setOut] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState(false);
+  const mode = MODES.find(m => m.id === modeId);
+  const setV = (k, v) => setVals(p => Object.assign({}, p, {
+    [k]: v
+  }));
+  const ready = mode.fields.every(f => (vals[f.k] || "").trim().length > 0);
+  const gen = async () => {
+    setErr("");
+    setBusy(true);
+    setOut("");
+    setCopied(false);
+    try {
+      const text = await askClaude(mode.system, mode.build(vals));
+      setOut(text);
+    } catch (e) {
+      setErr(String(e.message || e));
+    }
+    setBusy(false);
+  };
+  const copy = () => {
+    try {
+      navigator.clipboard.writeText(out);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {}
+  };
+  if (!configured) return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: 30
+    }
+  }, "Hiányzik a beállítás.");
+  if (!session) return /*#__PURE__*/React.createElement(Login, {
+    onAuth: () => setSess(SESSION)
+  });
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: C.paper,
+      paddingBottom: 40
+    }
+  }, /*#__PURE__*/React.createElement("header", {
+    style: {
+      position: "sticky",
+      top: 0,
+      zIndex: 20,
+      background: C.ink,
+      color: "#fff"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "13px 16px",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      letterSpacing: ".18em",
+      color: "#C9A14A",
+      fontWeight: 600
+    }
+  }, "CUT N' FADE · SHOP"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 21,
+      fontWeight: 700,
+      marginTop: 1
+    }
+  }, "Marketing segéd")), /*#__PURE__*/React.createElement("button", {
+    className: "tap",
+    onClick: () => {
+      setSession(null);
+      setSess(null);
+    },
+    style: {
+      border: "1px solid #3A3F47",
+      background: "none",
+      color: "#9AA0A8",
+      fontSize: 11.5,
+      fontWeight: 600,
+      padding: "5px 10px",
+      borderRadius: 7
+    }
+  }, "Kilépés")), /*#__PURE__*/React.createElement("div", {
+    className: "pole",
+    style: {
+      height: 3
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 620,
+      margin: "0 auto",
+      padding: "16px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "chips",
+    style: {
+      display: "flex",
+      gap: 8,
+      overflowX: "auto",
+      paddingBottom: 4
+    }
+  }, MODES.map(m => {
+    const on = m.id === modeId;
+    return /*#__PURE__*/React.createElement("button", {
+      key: m.id,
+      className: "tap",
+      onClick: () => {
+        setModeId(m.id);
+        setOut("");
+        setErr("");
+      },
+      style: {
+        flex: "0 0 auto",
+        border: "1px solid " + (on ? C.ink : C.line),
+        background: on ? C.ink : "#fff",
+        color: on ? "#fff" : C.inkSoft,
+        borderRadius: 999,
+        padding: "8px 15px",
+        fontSize: 13.5,
+        fontWeight: 600,
+        whiteSpace: "nowrap"
+      }
+    }, m.label);
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 16,
+      background: "#fff",
+      border: "1px solid " + C.line,
+      borderRadius: 16,
+      padding: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      marginBottom: 14
+    }
+  }, mode.cim), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 13
+    }
+  }, mode.fields.map(f => /*#__PURE__*/React.createElement("label", {
+    key: f.k,
+    style: {
+      display: "block"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "lbl"
+  }, f.label), f.area ? /*#__PURE__*/React.createElement("textarea", {
+    className: "in",
+    rows: 2,
+    value: vals[f.k] || "",
+    onChange: e => setV(f.k, e.target.value),
+    placeholder: f.ph,
+    style: {
+      resize: "vertical"
+    }
+  }) : /*#__PURE__*/React.createElement("input", {
+    className: "in",
+    value: vals[f.k] || "",
+    onChange: e => setV(f.k, e.target.value),
+    placeholder: f.ph
+  })))), /*#__PURE__*/React.createElement("button", {
+    className: "tap",
+    onClick: gen,
+    disabled: busy || !ready,
+    style: {
+      marginTop: 15,
+      width: "100%",
+      border: "none",
+      background: busy || !ready ? "#D9D4C8" : C.brass,
+      color: "#fff",
+      fontWeight: 700,
+      fontSize: 15,
+      padding: "13px",
+      borderRadius: 11
+    }
+  }, busy ? "Írom…" : "Generálás"), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 12,
+      background: "#FBEFEC",
+      border: "1px solid #EBC9C2",
+      color: "#8E2E22",
+      fontSize: 13,
+      padding: "10px 12px",
+      borderRadius: 10
+    }
+  }, err)), out && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 14,
+      background: "#fff",
+      border: "1px solid " + C.line,
+      borderRadius: 16,
+      padding: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "lbl",
+    style: {
+      margin: 0
+    }
+  }, "Eredmény"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "tap",
+    onClick: gen,
+    style: {
+      border: "1px solid " + C.line,
+      background: "#fff",
+      color: C.inkSoft,
+      fontSize: 12.5,
+      fontWeight: 600,
+      padding: "6px 11px",
+      borderRadius: 8
+    }
+  }, "Újra"), /*#__PURE__*/React.createElement("button", {
+    className: "tap",
+    onClick: copy,
+    style: {
+      border: "none",
+      background: copied ? "#2E8B45" : C.ink,
+      color: "#fff",
+      fontSize: 12.5,
+      fontWeight: 600,
+      padding: "6px 12px",
+      borderRadius: 8
+    }
+  }, copied ? "Másolva ✓" : "Másolás"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14.5,
+      lineHeight: 1.55,
+      color: C.ink,
+      whiteSpace: "pre-wrap"
+    }
+  }, out))));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(App, null));
+  </script>
+</body>
+</html>
